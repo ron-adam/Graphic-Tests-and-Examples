@@ -4,6 +4,7 @@
     This was created for discussing the higher level programming API
     for Datoviz.
 
+    Version: 1.0.0
 """
 import time
 import numpy as np
@@ -48,51 +49,58 @@ def mid_polate(A, B, C, t):
 
 class SmoothPath:
     """
-        Animation path over time period.
+        Interpolate values smoothly along a series of points.
 
         points:  A series of points on a path.
         period:  Time to travel points in seconds.
 
-        note:  The path wraps beck to beginning if time exceed the period.
+        Returns:  A callback object that takes a time index
+                  and returns a value along the smoothed path.
+
+        note:  The path wraps beck to beginning if time
+               exceed the period.
     """
     def __init__(self, points, period):
         self.points = np.array(points, dtype='f')
         self.period = period
-        self.tm = 0.0
         self._inds = np.array((len(points)-1, 0, 1), dtype='i')
+        self.last = time.time()
+        self.pos = 0
 
-    def __call__(self, td):
-        self.tm += td / self.period
-        if self.tm >= 1.0:
-            self.tm %= 1.0
+    def __call__(self, tm):
+        """
+            Get next value in smoothed path at 'td' distance
+            from the last call.
+        """
+        td = tm - self.last
+        self.last = tm
+
+        self.pos += td * len(self.points) / self.period
+        if self.pos >= 1.0:
+            self.pos %= 1.0
             self._inds = (self._inds + 1) % len(self.points)
-        return mid_polate(*self.points[self._inds], self.tm)
+        return mid_polate(*self.points[self._inds], self.pos)
 
     def __repr__(self):
         return f"SmoothPath({self.points}, {self.period})"
 
 
-def checkerboard(size, color0=(0,0,0), color1=(1,1,1)):
+def checkerboard(shape, color0=(0,0,0), color1=(1,1,1)):
     """
         Create an array with a checkerboard pattern.
 
         Args:
-            size:   (x, y)
+            shape:   Array size.
             color0:  Color for odd locations.
             color1:  Color for even locations.
 
         Result:
             Returns a rgb array with alternating colored pixels.
-
     """
-    x, y = size
-    ix, iy = np.indices(size)
-    sx = ix % 2
-    sy = iy % 2
-    s = (sx + sy) % 2
-    g = np.ones((x, y, 3), dtype='f')
-    g[s==1] = color0
-    g[s==0] = color1
+    shape = tuple(shape) + (3,)
+    g = np.full(shape, color0)
+    g[::2, ::2] = color1
+    g[1::2, 1::2] = color1
     return g
 
 
@@ -106,11 +114,14 @@ class SceneCanvas(app.Canvas):
         app.Canvas.__init__(self, size=(640, 480), title='Animated Lights and Cubes', keys="interactive")
 
         # OpenGL initialization
-        gloo.set_state(clear_color=(0.1, 0.1, 0.15, 1.0),
+        self.clear_color = (0.05, 0.05, 0.1, 1.0)
+        gloo.set_state(clear_color=self.clear_color,
                        depth_test=True,
                        polygon_offset=(1, 1),
                        blend_func=('src_alpha', 'one_minus_src_alpha'),
-                       line_width=0.75)
+                       blend=True,
+                       )
+
         x, y = self.physical_size
         self.aspect = x/y
         self.proj = perspective(45.0, self.aspect, 0.1, 100.0)
@@ -141,7 +152,6 @@ class SceneCanvas(app.Canvas):
         self.show()
 
     def on_timer(self, event):
-        self.tm = time.time()
         self.update()
 
     def on_resize(self, event):
@@ -165,11 +175,14 @@ class SceneCanvas(app.Canvas):
         self.items.append(item)
 
     def on_draw(self, event):
-        for light in self.lights:
-            light.draw(self.tm)
+        tm = time.time()
 
         for item in self.items:
-            item.draw(self.tm)
+            item.draw(tm)
+
+        # Draw transparent objects last.
+        for light in self.lights:
+            light.draw(tm)
 
 
 class Camera:
@@ -183,10 +196,8 @@ class Camera:
         self.position = position
         self.scene = scene
 
-        self.mvp = scene.mvp.copy()                     # Copy to avoid changes to parent values.
+        self.mvp = scene.mvp.copy()     # Copy to avoid changes to parent values.
         self.mvp['view'][:] = translate(self.position)
-
-        #self.lights = scene.lights
 
 
 class PointLight:
@@ -201,7 +212,6 @@ class PointLight:
             More specifically it needs the distance, direction, and color.
 
         OPTIONS:  Define a light group,  Or have a light tree structure.
-
     """
 
     vertex = """
@@ -244,6 +254,7 @@ class PointLight:
             if (dist_squared > 1.0)
                 discard;
             FragColor = max(Color, 1.0 - dist_squared);
+            FragColor.a = 1 - dist_squared;
         }
         """
 
@@ -258,7 +269,6 @@ class PointLight:
 
         self.program = Program(PointLight.vertex, PointLight.fragment)
         self.update_program()
-        self.tm = time.time()
 
     def update_program(self):
         self.values = {
@@ -271,9 +281,7 @@ class PointLight:
 
     def animate(self, tm):
         # Update location along path.
-        td = tm - self.tm
-        self.tm = tm
-        self.pos = self.path(td)      # Keep reference updated for objects.
+        self.pos = self.path(tm)      # Keep reference updated for objects.
         model = translate(self.pos)
         self.program['model'] = model
         self.program['view'] = self.mvp['view']
@@ -371,7 +379,7 @@ class Cube:
 
         self.path = path
         self.material = material
-        self.texture = texture
+        self.texture = gloo.Texture2D(texture, interpolation='linear')
         self.parent = parent
 
         self.mvp = parent.mvp.copy()
@@ -410,28 +418,24 @@ class Cube:
             self.program[key] = self.values[key]
 
     def animate(self, tm):
-        td = tm - self.tm
-        self.tm = tm
 
         #
-        # Updating values that may have changed.
+        # Update program values that may have changed.
         #
-
-        # Vispy requires this work around for uniform arrays.
         self.program['light_pos[0]'] = self.lights[0].pos
         self.program['light_color[0]'] = self.lights[0].color
         self.program['light_pos[1]'] = self.lights[1].pos
         self.program['light_color[1]'] = self.lights[1].color
         self.program['light_pos[2]'] = self.lights[2].pos
         self.program['light_color[2]'] = self.lights[2].color
-
-        # Panel may have been resized.
         self.program['panel_size'] = self.mvp['panel_size']
         self.program['proj'] = self.mvp['proj']  # May have been resized.
 
         #
         # Animate cube.
         #
+        td = tm - self.tm
+        self.tm = tm
 
         # Cube rotation.
         theta = self.theta * td
@@ -441,8 +445,8 @@ class Cube:
         self.mvp['model'] = model
 
         # Cube position.
-        pos = self.path(td)
-        self.program['model'] =  model @ rot @ translate(pos)
+        pos = self.path(tm)
+        self.program['model'] =  model @ translate(pos)
 
     def draw(self, tm):
         self.animate(tm)
@@ -457,33 +461,37 @@ if __name__ == '__main__':
     scene.add_camera(camera)
 
     # Add lights to scene.
-    r = 6.0      # Curve radius lights follow.
+    r = 7.0      # Curve radius lights follow.
     points = [(-r, 0, 0), (0, 0, -r), (r, 0, 0), (0, 0, r)]
-    path = SmoothPath(points, period=1.0)
+    path = SmoothPath(points, period=4.0)
     color = (0, 1, 1)
     light1 = PointLight(path, color, scene)
     scene.add_light(light1)
 
     points = [(0, r, 0), (0, 0, r), (0, -r, 0), (0, 0, -r)]
-    path = SmoothPath(points, period=1.0)
+    path = SmoothPath(points, period=4.0)
     color = (1, 0, 1)
     light2 = PointLight(path, color, scene)
     scene.add_light(light2)
 
     points = [(r, 0, 0), (0, -r, 0), (-r, 0, 0), (0, r, 0)]
-    path = SmoothPath(points, period=1.0)
+    path = SmoothPath(points, period=4.0)
     color = (1, 1, 0)
     light3 = PointLight(path, color, scene)
     scene.add_light(light3)
 
     # Add Cubes to scene.
-    for n in range(8):
+    count = 8
+    for n in range(count):
         points = (np.random.random(size=(3,3))-.5) * 5.0
-        path = SmoothPath(points, period=2.0)
+        path = SmoothPath(points, period=10.0)
         material = (0.05, 0.7, 1.0, 60.0)
         color = normalize(np.random.random(size=3))
         texture = checkerboard((n+1, n+1), color, 1 - color)
-        cube = Cube(path, material, texture, parent=scene)
+        # Enlarge texture pattern.
+        for axis in (0,1):
+            texture = np.repeat(texture, (count+16)//(n+1), axis=axis)
+        cube = Cube(path, material, texture.astype('f'), parent=scene)
         scene.add_item(cube)
 
     app.run()
