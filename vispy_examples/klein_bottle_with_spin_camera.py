@@ -22,15 +22,14 @@ QAngle = Quaternion.create_from_euler_angles
 
 class SpinCamera(scene.cameras.ArcballCamera):
     """
-        Move camera posityion around object.
+    Move camera position around object with continuous spin interaction.
 
-        angle values are:
-            x = rotate camera clockwise counter clockwise
-            y = move camera left or right around scene
-            z = move camera up or down around scene
+    Rotation angles:
+        x = rotate camera clockwise/counter-clockwise (roll)
+        y = rotate camera around scene horizontally (yaw)
+        z = rotate camera up/down around scene (pitch)
     """
     def __init__(self, parent, *args, **kwds):
-        print(dir(parent))
         canvas = parent.parent.canvas
         scene.cameras.ArcballCamera.__init__(self, *args, **kwds)
         self._press_event = None
@@ -41,7 +40,8 @@ class SpinCamera(scene.cameras.ArcballCamera):
         self._timer.start()
         self.last_time = time.time()
 
-    def rotate_camera_view(self, angle):
+    def rotate_camera_view(self, angle: np.ndarray) -> None:
+        """Rotate camera view by specified angles in degrees."""
         qa = QAngle(*angle, degrees=True)
         cq = self.get_state()['_quaternion']
         self.set_state({'_quaternion': qa*cq})
@@ -63,28 +63,31 @@ class SpinCamera(scene.cameras.ArcballCamera):
             self.rotate_speed *= 0
 
     def on_timer(self, event):
-        """ Called frequently to keep view spinning. """
-        try:
+        """Called frequently to keep view spinning."""
+        if hasattr(event, 'dt'):
             dt = event.dt
-        except AttributeError:
+        else:
             t = time.time()
             dt = t - self.last_time
             self.last_time = t
         self.rotate_camera_view(self.rotate_speed * dt)
 
 
+
 def klein(u, v):
     from math import pi, cos, sin
-    if u < pi:
-        x = 3 * cos(u) * (1 + sin(u)) + \
-            (2 * (1 - cos(u) / 2)) * cos(u) * cos(v)
+    PI = pi
+    SCALE = 5
+
+    if u < PI:
+        x = 3 * cos(u) * (1 + sin(u)) + (2 * (1 - cos(u) / 2)) * cos(u) * cos(v)
         z = -8 * sin(u) - 2 * (1 - cos(u) / 2) * sin(u) * cos(v)
     else:
-        x = 3 * cos(u) * (1 + sin(u)) + (2 * (1 - cos(u) / 2)) * cos(v + pi)
+        x = 3 * cos(u) * (1 + sin(u)) + (2 * (1 - cos(u) / 2)) * cos(v + PI)
         z = -8 * sin(u)
-    y = -2 * (1 - cos(u) / 2) * sin(v)
-    return x/5, y/5, z/5
 
+    y = -2 * (1 - cos(u) / 2) * sin(v)
+    return x / SCALE, y / SCALE, z / SCALE
 
 # Prepare canvas
 canvas = scene.SceneCanvas(keys='interactive', size=(800, 600), show=True)
