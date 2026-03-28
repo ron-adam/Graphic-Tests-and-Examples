@@ -96,7 +96,6 @@ canvas = scene.SceneCanvas(keys='interactive', size=(800, 600), show=True)
 view = canvas.central_widget.add_view()
 
 # Add camera
-#view.camera = scene.cameras.ArcballCamera(parent=view.scene)
 view.camera = SpinCamera(parent=view.scene)
 
 # Add mesh
